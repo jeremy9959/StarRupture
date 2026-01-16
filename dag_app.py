@@ -31,9 +31,12 @@ def _extract_recipes(data):
             if k in obj:
                 out = obj[k]
                 if isinstance(out, dict) and "id" in out:
-                    return out["id"]
-                return out
-        return None
+                    output_id = out["id"]
+                    output_amount = out.get("amount_per_minute") or out.get("amount") or out.get("qty") or 1
+                    return str(output_id), float(output_amount)
+                else:
+                    return str(out), 1.0
+        return None, 1.0
 
     def get_inputs(obj):
         for k in ("inputs", "in", "ingredients", "requires", "cost"):
@@ -89,11 +92,11 @@ def _extract_recipes(data):
                     break
 
             if looks_like_recipe(obj):
-                out = get_output(obj)
+                out, out_amt = get_output(obj)
                 inp = normalize_inputs(get_inputs(obj))
                 m = get_machine(obj) or current_machine
                 if out is not None:
-                    recipes.append({"machine": m, "output": str(out), "inputs": inp})
+                    recipes.append({"machine": m, "output": out, "output_amount": out_amt, "inputs": inp})
 
             for v in obj.values():
                 crawl(v, machine)
@@ -164,6 +167,13 @@ def compute_levels(recipes):
 
 def build_dependency_graph(recipes):
     G = nx.DiGraph()
+    # Build mapping of material to its output rate
+    material_output_rates = {}
+    for r in recipes:
+        out = r["output"]
+        output_amt = r.get("output_amount", 1)
+        material_output_rates[out] = output_amt
+    
     for r in recipes:
         out = r["output"]
         G.add_node(out)
@@ -173,6 +183,12 @@ def build_dependency_graph(recipes):
                 G.edges[inp, out]["recipes"].append({"machine": r["machine"], "qty": qty})
             else:
                 G.add_edge(inp, out, recipes=[{"machine": r["machine"], "qty": qty}])
+    
+    # Store output rates as node attributes
+    for material, rate in material_output_rates.items():
+        if material in G:
+            G.nodes[material]["output_rate"] = rate
+    
     return G
 
 
@@ -316,6 +332,10 @@ def _bokeh_sources(G, pos, edge_labels):
         edge_alpha.append(0.65)
 
     node_source = ColumnDataSource(node_data)
+    
+    # All edge labels are horizontal (angle = 0)
+    edge_angle_list = [0] * len(start_labels)
+    
     edge_source = ColumnDataSource({
         "xs": edge_xs,
         "ys": edge_ys,
@@ -729,8 +749,10 @@ def main():
     for u, v, d in G.edges(data=True):
         rs = d.get("recipes", [])
         if len(rs) == 1:
-            q = rs[0]["qty"]
-            edge_labels[(u, v)] = f"{q:g}"
+            # Get output rate from source node and input rate for this edge
+            source_output_rate = G.nodes[u].get("output_rate", 1)
+            input_q = rs[0]["qty"]
+            edge_labels[(u, v)] = f"{source_output_rate:g}→{input_q:g}"
         else:
             edge_labels[(u, v)] = f"{len(rs)} recipes"
 
