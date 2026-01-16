@@ -442,10 +442,11 @@ def create_bokeh_graph(G, pos, edge_labels):
     )
     p.add_layout(edge_labels)
 
-    renderer = p.circle(
+    renderer = p.scatter(
         x="x",
         y="y",
         size=55,
+        marker="circle",
         source=node_source,
         fill_color="color",
         line_color="white",
