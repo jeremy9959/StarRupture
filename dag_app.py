@@ -6,7 +6,7 @@ import json
 from collections import defaultdict
 import networkx as nx
 from bokeh.plotting import figure, curdoc
-from bokeh.models import ColumnDataSource, Range1d, LabelSet, Label, CustomJS, PointDrawTool
+from bokeh.models import ColumnDataSource, Range1d, LabelSet, Label, CustomJS, TapTool
 from bokeh.palettes import Category20
 from bokeh.layouts import column
 
@@ -355,7 +355,7 @@ def create_bokeh_graph(G, pos, edge_labels):
         height=None,
         min_height=700,
         title="Star Rupture Materials Dependency Graph",
-        tools="pan,wheel_zoom,box_zoom,reset,save,tap",
+        tools="pan,wheel_zoom,box_zoom,reset,save",
         active_scroll="wheel_zoom",
         x_range=x_range,
         y_range=y_range,
@@ -379,9 +379,7 @@ def create_bokeh_graph(G, pos, edge_labels):
         y_units="data",
         text=(
             "Click on a node to show the process tree\n"
-            "leading to that material, including rates\n"
-            "Use the Point Draw Tool to\n"
-            "rearrange nodes on a given level"
+            "leading to that material, including rates"
         ),
         text_font_size="10pt",
         text_color="black",
@@ -501,8 +499,11 @@ def create_bokeh_graph(G, pos, edge_labels):
     
     node_source.js_on_change('data', callback)
     
-    # Select a node and all its ancestors when clicked
-    select_callback = CustomJS(args=dict(source=node_source, edges=edge_source), code="""
+    # Create a ColumnDataSource to track which tool triggered the selection
+    tool_state = ColumnDataSource(data={'is_dragging': [0]})
+    
+    # Tap callback: select node and all its ancestors, show rates
+    tap_callback = CustomJS(args=dict(source=node_source, edges=edge_source), code="""
         const data = source.data;
         const names = data['name'];
         const ancestors = data['ancestors'];
@@ -531,11 +532,11 @@ def create_bokeh_graph(G, pos, edge_labels):
         };
 
         if (idxs.length > 0) {
-            // Apply to the first tapped node (Bokeh tap selects one by default)
+            // Apply to the first tapped node
             addWithAncestors(idxs[0]);
             source.selected.indices = Array.from(selected);
         } else {
-            // Clear selection restore all
+            // Clear selection - restore all
             source.selected.indices = [];
         }
 
@@ -570,11 +571,82 @@ def create_bokeh_graph(G, pos, edge_labels):
         source.change.emit();
         edges.change.emit();
     """)
+    
+    # Selection callback: select node and all its ancestors, show rates
+    select_callback = CustomJS(args=dict(source=node_source, edges=edge_source), code="""
+        const data = source.data;
+        const names = data['name'];
+        const ancestors = data['ancestors'];
+        const labelAlpha = data['label_alpha'];
+        const idxs = source.selected.indices;
+
+        // Build name -> index map
+        const nameToIndex = {};
+        for (let i = 0; i < names.length; i++) {
+            nameToIndex[names[i]] = i;
+        }
+
+        const addWithAncestors = (i) => {
+            selected.add(i);
+            const ancStr = ancestors[i];
+            if (ancStr) {
+                const parts = ancStr.split(',').filter(s => s.length > 0);
+                for (const nm of parts) {
+                    const j = nameToIndex[nm];
+                    if (j !== undefined) {
+                        selected.add(j);
+                    }
+                }
+            }
+        };
+
+        let selected = new Set();
+        if (idxs.length > 0) {
+            // Apply to the first tapped node
+            addWithAncestors(idxs[0]);
+            source.selected.indices = Array.from(selected);
+        } else {
+            // Clear selection - restore all
+            source.selected.indices = [];
+        }
+
+        // Update label alpha: selected subtree visible, others very faint
+        for (let i = 0; i < names.length; i++) {
+            labelAlpha[i] = selected.size === 0 ? 1.0 : (selected.has(i) ? 1.0 : 0.04);
+        }
+
+        // Edge selection: show only edges fully inside the selected subtree
+        const edgeData = edges.data;
+        const starts = edgeData['start'];
+        const ends = edgeData['end'];
+        const edgeAlpha = edgeData['alpha'];
+        const edgeLabelAlpha = edgeData['label_alpha'];
+        const edgeSelected = [];
+        for (let i = 0; i < starts.length; i++) {
+            const a = starts[i];
+            const b = ends[i];
+            const aIdx = nameToIndex[a];
+            const bIdx = nameToIndex[b];
+            if (selected.size === 0 || (selected.has(aIdx) && selected.has(bIdx))) {
+                edgeAlpha[i] = 0.65;
+                edgeLabelAlpha[i] = selected.size === 0 ? 0.0 : 1.0;
+                if (selected.size !== 0) edgeSelected.push(i);
+            } else {
+                edgeAlpha[i] = 0.04;
+                edgeLabelAlpha[i] = 0.0;
+            }
+        }
+        edges.selected.indices = selected.size === 0 ? [] : edgeSelected;
+
+        source.change.emit();
+        edges.change.emit();
+    """)
+    
     node_source.selected.js_on_change('indices', select_callback)
     
-    # Add PointDrawTool to enable dragging nodes
-    draw_tool = PointDrawTool(renderers=[renderer], add=False)
-    p.add_tools(draw_tool)
+    # Add TapTool to enable clicking on nodes
+    tap_tool = TapTool(renderers=[renderer])
+    p.add_tools(tap_tool)
 
     return p
 
