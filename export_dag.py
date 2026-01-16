@@ -74,7 +74,7 @@ def main():
                         changed = True
         print(f"Recalculation complete after {iterations} iterations")
 
-    keep = {m for m, lvl in resolved.items() if lvl <= 4}
+    keep = {m for m, lvl in resolved.items() if lvl <= 5}
 
     G = G_full.subgraph(keep).copy()
 
@@ -111,7 +111,7 @@ def main():
 
     # Print level summary
     print("\nMaterial levels:")
-    for lvl in range(0, 5):
+    for lvl in range(0, 6):
         items = sorted([m for m, L in resolved.items() if L == lvl])
         print(f"  Level {lvl}: {len(items)} items")
 
