@@ -6,7 +6,7 @@ import json
 from collections import defaultdict
 import networkx as nx
 from bokeh.plotting import figure, curdoc
-from bokeh.models import ColumnDataSource, HoverTool, Range1d, LabelSet, Label, CustomJS, PointDrawTool
+from bokeh.models import ColumnDataSource, Range1d, LabelSet, Label, CustomJS, PointDrawTool
 from bokeh.palettes import Category20
 from bokeh.layouts import column
 
@@ -369,14 +369,22 @@ def create_bokeh_graph(G, pos, edge_labels):
     p.xaxis.visible = False
     p.yaxis.visible = False
 
-    # Instruction box (upper right)
+    # Instruction box (upper left in data space with padding)
+    instr_x = x_min + dx * 0.02
+    instr_y = y_max - dy * 0.02
     instruction = Label(
-        x=12,
-        y=12,
-        x_units="screen",
-        y_units="screen",
-        text="Click on a node to show the process tree\nleading to that material, including rates",
+        x=instr_x,
+        y=instr_y,
+        x_units="data",
+        y_units="data",
+        text=(
+            "Click on a node to show the process tree\n"
+            "leading to that material, including rates\n"
+            "Use the Point Draw Tool to\n"
+            "rearrange nodes on a given level"
+        ),
         text_font_size="10pt",
+        text_color="black",
         text_align="left",
         text_baseline="top",
         background_fill_color="white",
@@ -385,6 +393,7 @@ def create_bokeh_graph(G, pos, edge_labels):
         border_line_alpha=0.6,
         border_line_width=1,
         padding=6,
+        level="overlay",
     )
     p.add_layout(instruction)
 
@@ -566,29 +575,6 @@ def create_bokeh_graph(G, pos, edge_labels):
     # Add PointDrawTool to enable dragging nodes
     draw_tool = PointDrawTool(renderers=[renderer], add=False)
     p.add_tools(draw_tool)
-
-    hover = HoverTool(
-        tooltips=[
-            ("material", "@name"),
-            ("machine", "@machine"),
-            ("level", "@level"),
-            ("in → out", "@in_degree → @out_degree"),
-        ],
-        renderers=[renderer],
-        point_policy="follow_mouse"
-    )
-    p.add_tools(hover)
-
-    edge_hover = HoverTool(
-        tooltips=[
-            ("edge", "@start → @end"),
-            ("qty/recipes", "@label"),
-        ],
-        renderers=[edge_renderer],
-        line_policy="nearest",
-        point_policy="none",
-    )
-    p.add_tools(edge_hover)
 
     return p
 
