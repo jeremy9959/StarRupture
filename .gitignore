@@ -1,0 +1,33 @@
+# Operating System Files
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+
+# IDE and Editor Files
+.vscode/
+.idea/
+*.iml
+*.sublime-*
+
+# Build Artifacts
+dist/
+build/
+*.egg-info/
+__pycache__/
+*.pyc
+*.pyo
+node_modules/
+*.log
+
+# Environment Files
+.env
+.env.local
+venv/
+env/
+
+# Temporary Files
+*.tmp
+tmp/
+temp/
