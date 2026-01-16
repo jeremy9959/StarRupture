@@ -6,7 +6,7 @@ import json
 from collections import defaultdict
 import networkx as nx
 from bokeh.plotting import figure, curdoc
-from bokeh.models import ColumnDataSource, HoverTool, Range1d, LabelSet, CustomJS, PointDrawTool
+from bokeh.models import ColumnDataSource, HoverTool, Range1d, LabelSet, Label, CustomJS, PointDrawTool
 from bokeh.palettes import Category20
 from bokeh.layouts import column
 
@@ -248,6 +248,14 @@ def _bokeh_sources(G, pos, edge_labels):
     palette = Category20[20] if len(machines) <= 20 else Category20[20] * ((len(machines) // 20) + 1)
     machine_to_color = {m: palette[i % len(palette)] for i, m in enumerate(machines)}
 
+    # Override specific machines for better contrast with black text
+    if "Fabricator" in machine_to_color:
+        machine_to_color["Fabricator"] = "#5da5ff"  # lighter blue for legibility
+
+    def _pretty(name: str) -> str:
+        # Replace underscores with spaces and title-case each word
+        return " ".join(part.capitalize() for part in name.split("_"))
+
     # Build node data as dict of lists (columnar format)
     node_data = {
         "name": [],
@@ -257,6 +265,8 @@ def _bokeh_sources(G, pos, edge_labels):
         "level": [],
         "color": [],
         "label": [],
+        "label_alpha": [],
+        "ancestors": [],
         "in_degree": [],
         "out_degree": [],
     }
@@ -265,16 +275,21 @@ def _bokeh_sources(G, pos, edge_labels):
         x, y = pos[n]
         machine = G.nodes[n].get("machine", "Unknown")
         level = G.nodes[n].get("level", "?")
-        # Two-line label: material name on top, machine type below
-        label = f"{n}\n{machine}" if machine != "Gathered" else n
+        # Two-line label: material name on top, machine type below (both prettified)
+        pretty_name = _pretty(n)
+        pretty_machine = _pretty(machine)
+        label = f"{pretty_name}\n{pretty_machine}" if machine != "Gathered" else pretty_name
+        ancestors = nx.ancestors(G, n)
         
         node_data["name"].append(n)
         node_data["x"].append(x)
         node_data["y"].append(y)
-        node_data["machine"].append(machine)
+        node_data["machine"].append(pretty_machine)
         node_data["level"].append(level)
         node_data["color"].append(machine_to_color.get(machine, "#808080"))
         node_data["label"].append(label)
+        node_data["label_alpha"].append(1.0)
+        node_data["ancestors"].append(",".join(ancestors) if ancestors else "")
         node_data["in_degree"].append(G.in_degree(n))
         node_data["out_degree"].append(G.out_degree(n))
 
@@ -283,6 +298,10 @@ def _bokeh_sources(G, pos, edge_labels):
     start_labels = []
     end_labels = []
     edge_qty_labels = []
+    edge_label_alpha = []
+    edge_mid_x = []
+    edge_mid_y = []
+    edge_alpha = []
     for u, v in G.edges():
         x0, y0 = pos[u]
         x1, y1 = pos[v]
@@ -291,6 +310,10 @@ def _bokeh_sources(G, pos, edge_labels):
         start_labels.append(u)
         end_labels.append(v)
         edge_qty_labels.append(edge_labels.get((u, v), ""))
+        edge_label_alpha.append(0.0)
+        edge_mid_x.append((x0 + x1) / 2)
+        edge_mid_y.append((y0 + y1) / 2)
+        edge_alpha.append(0.65)
 
     node_source = ColumnDataSource(node_data)
     edge_source = ColumnDataSource({
@@ -299,6 +322,10 @@ def _bokeh_sources(G, pos, edge_labels):
         "start": start_labels,
         "end": end_labels,
         "label": edge_qty_labels,
+        "label_alpha": edge_label_alpha,
+        "mid_x": edge_mid_x,
+        "mid_y": edge_mid_y,
+        "alpha": edge_alpha,
     })
     return node_source, edge_source, machine_to_color
 
@@ -312,18 +339,28 @@ def create_bokeh_graph(G, pos, edge_labels):
 
     all_x = [x for coords in node_source.data["x"] for x in ([coords] if not isinstance(coords, list) else coords)]
     all_y = [y for coords in node_source.data["y"] for y in ([coords] if not isinstance(coords, list) else coords)]
-    x_min, x_max = min(all_x) - 1.0, max(all_x) + 1.0
-    y_min, y_max = min(all_y) - 1.0, max(all_y) + 1.0
+    x_min_raw, x_max_raw = min(all_x), max(all_x)
+    y_min_raw, y_max_raw = min(all_y), max(all_y)
+    dx = x_max_raw - x_min_raw if x_max_raw != x_min_raw else 1.0
+    dy = y_max_raw - y_min_raw if y_max_raw != y_min_raw else 1.0
+    x_pad = max(0.5, dx * 0.12)
+    y_pad = max(0.5, dy * 0.12)
+    x_min, x_max = x_min_raw - x_pad, x_max_raw + x_pad
+    y_min, y_max = y_min_raw - y_pad, y_max_raw + y_pad
+    x_range = Range1d(x_min, x_max)
+    y_range = Range1d(y_min, y_max)
 
     p = figure(
         width=1400,
-        height=900,
-        title="StarRupture Material Dependency Graph (Bokeh Server, Levels 0–4)",
-        tools="pan,wheel_zoom,box_zoom,reset,save,hover,tap",
+        height=None,
+        min_height=700,
+        title="Star Rupture Materials Dependency Graph",
+        tools="pan,wheel_zoom,box_zoom,reset,save,tap",
         active_scroll="wheel_zoom",
-        x_range=Range1d(x_min, x_max),
-        y_range=Range1d(y_min, y_max),
-        match_aspect=True,
+        x_range=x_range,
+        y_range=y_range,
+        sizing_mode="stretch_both",
+        match_aspect=False,
     )
     
     # Remove grid and axes
@@ -332,14 +369,51 @@ def create_bokeh_graph(G, pos, edge_labels):
     p.xaxis.visible = False
     p.yaxis.visible = False
 
-    p.multi_line(
+    # Instruction box (upper right)
+    instruction = Label(
+        x=12,
+        y=12,
+        x_units="screen",
+        y_units="screen",
+        text="Click on a node to show the process tree\nleading to that material, including rates",
+        text_font_size="10pt",
+        text_align="left",
+        text_baseline="top",
+        background_fill_color="white",
+        background_fill_alpha=0.9,
+        border_line_color="#555",
+        border_line_alpha=0.6,
+        border_line_width=1,
+        padding=6,
+    )
+    p.add_layout(instruction)
+
+    edge_renderer = p.multi_line(
         xs="xs",
         ys="ys",
         source=edge_source,
         line_color="#7a7a7a",
-        line_alpha=0.65,
+        line_alpha="alpha",
         line_width=2,
+        nonselection_line_alpha=0.04,
+        nonselection_line_color="#7a7a7a",
     )
+
+    edge_labels = LabelSet(
+        x="mid_x",
+        y="mid_y",
+        text="label",
+        source=edge_source,
+        text_font_size="7pt",
+        text_align="center",
+        text_baseline="middle",
+        text_alpha="label_alpha",
+        background_fill_color="white",
+        background_fill_alpha="label_alpha",
+        border_line_color=None,
+        border_line_alpha="label_alpha",
+    )
+    p.add_layout(edge_labels)
 
     renderer = p.circle(
         x="x",
@@ -354,6 +428,9 @@ def create_bokeh_graph(G, pos, edge_labels):
         hover_line_width=2,
         selection_line_color="#222",
         selection_line_width=2,
+        nonselection_fill_alpha=0.04,
+        nonselection_line_alpha=0.04,
+        nonselection_line_color="white",
     )
 
     labels = LabelSet(
@@ -364,6 +441,7 @@ def create_bokeh_graph(G, pos, edge_labels):
         text_font_size="5pt",
         text_align="center",
         text_baseline="middle",
+        text_alpha="label_alpha",
         y_offset=0,
     )
     p.add_layout(labels)
@@ -381,12 +459,14 @@ def create_bokeh_graph(G, pos, edge_labels):
             ys[i] = y_orig[i];
         }
         
-        // Update edge positions based on new node positions
+        // Update edge positions (and label midpoints) based on new node positions
         const edge_data = edge_source.data;
         const edge_xs = edge_data['xs'];
         const edge_ys = edge_data['ys'];
         const starts = edge_data['start'];
         const ends = edge_data['end'];
+        const mid_x = edge_data['mid_x'];
+        const mid_y = edge_data['mid_y'];
         
         // Create name->position lookup
         const node_pos = {};
@@ -401,6 +481,8 @@ def create_bokeh_graph(G, pos, edge_labels):
             if (node_pos[start_name] && node_pos[end_name]) {
                 edge_xs[i] = [node_pos[start_name][0], node_pos[end_name][0]];
                 edge_ys[i] = [node_pos[start_name][1], node_pos[end_name][1]];
+                mid_x[i] = (node_pos[start_name][0] + node_pos[end_name][0]) / 2.0;
+                mid_y[i] = (node_pos[start_name][1] + node_pos[end_name][1]) / 2.0;
             }
         }
         
@@ -409,6 +491,77 @@ def create_bokeh_graph(G, pos, edge_labels):
     """)
     
     node_source.js_on_change('data', callback)
+    
+    # Select a node and all its ancestors when clicked
+    select_callback = CustomJS(args=dict(source=node_source, edges=edge_source), code="""
+        const data = source.data;
+        const names = data['name'];
+        const ancestors = data['ancestors'];
+        const labelAlpha = data['label_alpha'];
+        const selected = new Set();
+        const idxs = source.selected.indices;
+
+        // Build name -> index map
+        const nameToIndex = {};
+        for (let i = 0; i < names.length; i++) {
+            nameToIndex[names[i]] = i;
+        }
+
+        const addWithAncestors = (i) => {
+            selected.add(i);
+            const ancStr = ancestors[i];
+            if (ancStr) {
+                const parts = ancStr.split(',').filter(s => s.length > 0);
+                for (const nm of parts) {
+                    const j = nameToIndex[nm];
+                    if (j !== undefined) {
+                        selected.add(j);
+                    }
+                }
+            }
+        };
+
+        if (idxs.length > 0) {
+            // Apply to the first tapped node (Bokeh tap selects one by default)
+            addWithAncestors(idxs[0]);
+            source.selected.indices = Array.from(selected);
+        } else {
+            // Clear selection restore all
+            source.selected.indices = [];
+        }
+
+        // Update label alpha: selected subtree visible, others very faint
+        for (let i = 0; i < names.length; i++) {
+            labelAlpha[i] = selected.size === 0 ? 1.0 : (selected.has(i) ? 1.0 : 0.04);
+        }
+
+        // Edge selection: show only edges fully inside the selected subtree
+        const edgeData = edges.data;
+        const starts = edgeData['start'];
+        const ends = edgeData['end'];
+        const edgeAlpha = edgeData['alpha'];
+        const edgeLabelAlpha = edgeData['label_alpha'];
+        const edgeSelected = [];
+        for (let i = 0; i < starts.length; i++) {
+            const a = starts[i];
+            const b = ends[i];
+            const aIdx = nameToIndex[a];
+            const bIdx = nameToIndex[b];
+            if (selected.size === 0 || (selected.has(aIdx) && selected.has(bIdx))) {
+                edgeAlpha[i] = 0.65;
+                edgeLabelAlpha[i] = selected.size === 0 ? 0.0 : 1.0;
+                if (selected.size !== 0) edgeSelected.push(i);
+            } else {
+                edgeAlpha[i] = 0.04;
+                edgeLabelAlpha[i] = 0.0;
+            }
+        }
+        edges.selected.indices = selected.size === 0 ? [] : edgeSelected;
+
+        source.change.emit();
+        edges.change.emit();
+    """)
+    node_source.selected.js_on_change('indices', select_callback)
     
     # Add PointDrawTool to enable dragging nodes
     draw_tool = PointDrawTool(renderers=[renderer], add=False)
@@ -431,7 +584,7 @@ def create_bokeh_graph(G, pos, edge_labels):
             ("edge", "@start → @end"),
             ("qty/recipes", "@label"),
         ],
-        renderers=[],
+        renderers=[edge_renderer],
         line_policy="nearest",
         point_policy="none",
     )
@@ -534,5 +687,5 @@ def main():
 
 # Create the plot and add to document
 plot = main()
-curdoc().add_root(column(plot))
+curdoc().add_root(column(plot, sizing_mode="stretch_both"))
 curdoc().title = "StarRupture DAG"
